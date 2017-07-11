@@ -1,0 +1,8 @@
+version: '3'
+services:
+  web:
+    image: 'cqp-parser'
+    build:
+      context: .
+    ports:
+      - 8080:8080
