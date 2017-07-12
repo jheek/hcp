@@ -22,18 +22,18 @@
 <note> Character set encoding: ASCII </note>
 </notesStmt>
 <sourceDesc>
-<biblStruct>
-<monogr>
-<author> Jane Austen </author>
-<title> Mansfield Park </title>
-<edition> Not specified </edition>
-<imprint>
-<publisher> not specified </publisher>
-<pubPlace> UK </pubPlace>
-<date> 1814 </date>
-</imprint>
-</monogr>
-</biblStruct>
+    <biblStruct>
+    <monogr>
+    <author> Jane Austen </author>
+    <title> Mansfield Park </title>
+    <edition> Not specified </edition>
+    <imprint>
+    <publisher> not specified </publisher>
+    <pubPlace> UK </pubPlace>
+    <date> 1814 </date>
+    </imprint>
+    </monogr>
+    </biblStruct>
 </sourceDesc>
 <profileDesc>
 <langUsage>

@@ -59,7 +59,7 @@ async function parseChapter(xmlChapter, index, numChapters) {
     paragraphs = paragraphs.split('<br>\n');
     paragraphs = paragraphs.map((text, ind) => ({
         $: {index: ind + 1, rindex: ind - paragraphs.length },
-        _: text
+        _: '\n' + text
     }));
     return {
         $: {index: index + 1, rindex: numChapters - index, title: xmlChapter.$.title},
@@ -74,17 +74,80 @@ function allWithProgress(promises, cb) {
     return Promise.all(promises);
 }
 
+function findYear(str) {
+    const regex = /[0-9]{2,4}/g;
+    let m;
+
+    let bestMatch = "";
+    while ((m = regex.exec(str)) !== null) {
+        // This is necessary to avoid infinite loops with zero-width matches
+        if (m.index === regex.lastIndex) {
+            regex.lastIndex++;
+        }
+        let match = m[0];
+        if (match.length > bestMatch)
+            bestMatch = match;
+    }
+    try {
+        return parseInt(bestMatch)
+    } catch (e) {
+        return 0;
+    }
+}
+
+function yearToCentury(year) {
+    return Math.floor(year / 100) + "xx";
+}
+
+function yearToDecade(year) {
+    return Math.floor(year / 10) + "x";
+}
+
+function createUniqueId(title, author) {
+    let str = author + title;
+    const regex = /[a-zA-Z]+/g;
+    let m;
+
+    let id = "";
+    while ((m = regex.exec(str)) !== null) {
+        // This is necessary to avoid infinite loops with zero-width matches
+        if (m.index === regex.lastIndex) {
+            regex.lastIndex++;
+        }
+        let match = m[0];
+        id += match;
+    }
+    return id.toLowerCase();
+}
+
 async function parseTexts(name, content) {
     let xml = await parseXML(content);
     if ('TEI' in xml) {
         // this is a Text Encoding Initiative file
         let tei = xml.TEI;
         let header = tei.teiHeader[0].fileDesc[0];
+        // console.log(header);
         let titleStmt = header.titleStmt[0];
         let publicationStmt = header.publicationStmt[0];
+        let sourceDesc = header.sourceDesc[0].biblStruct[0].monogr[0];
+        let imprint = sourceDesc.imprint[0];
         let title = titleStmt.title.join(' ').trim();
         let author = titleStmt.author.join(' ').trim();
-
+        
+        let year = 0;
+        let century = "0xx";
+        let decade = "0x";
+        try {
+            let date = imprint.date.join(' ').trim();
+            year = findYear(date);
+            century = yearToCentury(year);
+            decade = yearToDecade(year);
+        } catch (e) {}
+        try {
+            author = sourceDesc.author.join(' ').trim();
+            title = sourceDesc.title.join(' ').trim();
+        } catch (e) {}
+        let id = createUniqueId(title, author);
         let chapters = [];
         function walkText(obj) {
             if (Array.isArray(obj)) {
@@ -112,7 +175,7 @@ async function parseTexts(name, content) {
         let transformedChapters = await allWithProgress(chapters.map((chapter, ind) => parseChapter(chapter, ind, chapters.length)), progress);
 
         let transformed = [{
-            $: {id: title.split(' ').join('-'), title, author},
+            $: {id: id, title, author, year: "" + year, century, decade},
             chapter: transformedChapters
         }];
         return transformed;
@@ -128,17 +191,25 @@ const inProgress = {};
 async function createCorpus(name, content) {
     inProgress[name] = 0;
 
-    let texts = await parseTexts(name, content);
+    try {
+        let texts = await parseTexts(name, content);
+        let corpus = {
+            corpus: {
+                text: texts
+            }
+        };
+        let corpusXml = buildXml(corpus);
+        await writeFile(`/data/${name}`, corpusXml, 'utf8');
+    } catch (e) {
+        console.error(e);
+    } finally {
+        delete inProgress[name];
+    }
+    
 
-    let corpus = {
-        corpus: {
-            text: texts
-        }
-    };
-    let corpusXml = buildXml(corpus);
-    await writeFile(`/data/${name}`, corpusXml, 'utf8');
+    
 
-    delete inProgress[name];
+    
 } 
 
 app.post('/api/transform', async function(req, res) {
