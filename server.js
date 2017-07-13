@@ -58,7 +58,7 @@ async function parseChapter(xmlChapter, index, numChapters) {
     let paragraphs = await tagPos(content.split(/(?:\\r|\\n|\r|\n)+/).filter(seg => seg.length > 0).join('<br>'));
     paragraphs = paragraphs.split('<br>\n');
     paragraphs = paragraphs.map((text, ind) => ({
-        $: {index: ind + 1, rindex: ind - paragraphs.length },
+        $: {index: ind + 1, rindex: paragraphs.length - ind },
         _: '\n' + text
     }));
     return {
@@ -120,70 +120,167 @@ function createUniqueId(title, author) {
     return id.toLowerCase();
 }
 
-async function parseTexts(name, content) {
-    let xml = await parseXML(content);
-    if ('TEI' in xml) {
-        // this is a Text Encoding Initiative file
-        let tei = xml.TEI;
-        let header = tei.teiHeader[0].fileDesc[0];
-        // console.log(header);
-        let titleStmt = header.titleStmt[0];
-        let publicationStmt = header.publicationStmt[0];
-        let sourceDesc = header.sourceDesc[0].biblStruct[0].monogr[0];
-        let imprint = sourceDesc.imprint[0];
-        let title = titleStmt.title.join(' ').trim();
-        let author = titleStmt.author.join(' ').trim();
-        
-        let year = 0;
-        let century = "0xx";
-        let decade = "0x";
-        try {
-            let date = imprint.date.join(' ').trim();
-            year = findYear(date);
-            century = yearToCentury(year);
-            decade = yearToDecade(year);
-        } catch (e) {}
-        try {
-            author = sourceDesc.author.join(' ').trim();
-            title = sourceDesc.title.join(' ').trim();
-        } catch (e) {}
-        let id = createUniqueId(title, author);
-        let chapters = [];
-        function walkText(obj) {
-            if (Array.isArray(obj)) {
-                obj.forEach(item => walkText(item));
-            } else {
-                for (let key of Object.keys(obj)) {
-                    if (key === 'chapter') {
-                        chapters.push(...obj[key]);
-                    } else {
-                        walkText(obj[key]);
-                    }
+async function parseTei(name, xml) {
+    // this is a Text Encoding Initiative file
+    let tei = xml.TEI;
+    let header = tei.teiHeader[0].fileDesc[0];
+    // console.log(header);
+    let titleStmt = header.titleStmt[0];
+    let publicationStmt = header.publicationStmt[0];
+    let sourceDesc = header.sourceDesc[0].biblStruct[0].monogr[0];
+    let imprint = sourceDesc.imprint[0];
+    let title = titleStmt.title.join(' ').trim();
+    let author = titleStmt.author.join(' ').trim();
+    let year = 0;
+    let century = "0xx";
+    let decade = "0x";
+    try {
+        let date = imprint.date.join(' ').trim();
+        year = findYear(date);
+        century = yearToCentury(year);
+        decade = yearToDecade(year);
+    } catch (e) {}
+    try {
+        author = sourceDesc.author.join(' ').trim();
+        title = sourceDesc.title.join(' ').trim();
+    } catch (e) {}
+    let id = createUniqueId(title, author);
+    let chapters = [];
+    function walkText(obj) {
+        if (Array.isArray(obj)) {
+            obj.forEach(item => walkText(item));
+        } else {
+            for (let key of Object.keys(obj)) {
+                if (key === 'chapter') {
+                    chapters.push(...obj[key]);
+                } else {
+                    walkText(obj[key]);
                 }
             }
         }
-
-        let text = tei.text;
-        walkText(text);
-
-        let done = 0;
-        let total = chapters.length + 1;
-        function progress() {
-            done++;
-            inProgress[name] = done / total;
-        }
-        let transformedChapters = await allWithProgress(chapters.map((chapter, ind) => parseChapter(chapter, ind, chapters.length)), progress);
-
-        let transformed = [{
-            $: {id: id, title, author, year: "" + year, century, decade},
-            chapter: transformedChapters
-        }];
-        return transformed;
-    } else if ('corpus' in xml) {
-        return xml.corpus.text;
-    } else {
-        throw "Unknown format";
     }
+    let text = tei.text;
+    walkText(text);
+
+    let done = 0;
+    let total = chapters.length + 1;
+    function progress() {
+        done++;
+        inProgress[name] = done / total;
+    }
+    let transformedChapters = await allWithProgress(chapters.map((chapter, ind) => parseChapter(chapter, ind, chapters.length)), progress);
+
+    let transformed = [{
+        $: {id: id, title, author, year: "" + year, century, decade},
+        chapter: transformedChapters
+    }];
+    return transformed;
+}
+
+async function parseLinearChapter(chapter, index, numChapters) {
+    let tagged = await tagPos(chapter.paragraphs.join('<br>'));
+    paragraphs = tagged.split('<br>\n');
+    paragraphs = paragraphs.map((text, ind) => ({
+        $: {index: ind + 1, rindex: paragraphs.length - ind },
+        _: '\n' + text
+    }));
+    return {
+        $: {index: index + 1, rindex: numChapters - index, title: chapter.title},
+        paragraph: paragraphs
+    };
+}
+
+const TOO_SHORT_PARAGRAPH_THRESHOLD = 30;
+const LONG_ENOUGH_PARAGRAPH_THRESHOLD = 200;
+function paragraphSanityCheck(rawParagraphs) {
+    let paragraphs = rawParagraphs;
+    let avgWords = paragraphs.reduce((sum, l) => sum + l.split(' ').length, 0) / paragraphs.length;
+    let avgChars = paragraphs.reduce((sum, l) => sum + l.length, 0) / paragraphs.length;
+    if (avgWords < TOO_SHORT_PARAGRAPH_THRESHOLD) {
+        paragraphs = [];
+        let currentP = null;
+        let words = 0;
+        rawParagraphs.forEach(line => {
+            if (currentP === null) {
+                currentP = line;
+                words = line.split(' ').length;
+            } else {
+                currentP += line;
+                words += line.split(' ').length;
+                if ((words > TOO_SHORT_PARAGRAPH_THRESHOLD && line.length < avgChars / 2) ||
+                    (words > LONG_ENOUGH_PARAGRAPH_THRESHOLD)) {
+                    paragraphs.push(currentP);
+                    currentP = null;
+                }
+            }
+        });
+        if (currentP !== null)
+            paragraphs.push(currentP);
+    }
+    return paragraphs;
+}
+
+
+async function parseLinear(name, content) {
+    let lines = content
+        .split(/(?:\\r|\\n|\r|\n)+/)
+        .map(str => str.trim())
+        .filter(seg => seg.length > 0)
+    let chapters = [];
+    let currentChapter = null;
+    lines.forEach(c => {
+        if (c.startsWith('#!')) {
+            let title = c.slice(2).trim();
+            currentChapter = {
+                title,
+                paragraphs: []
+            };
+            chapters.push(currentChapter);
+        } else if (currentChapter !== null) {
+            currentChapter.paragraphs.push(c);
+        }
+    }, []);
+    chapters.forEach(chapter => {
+        chapter.paragraphs = paragraphSanityCheck(chapter.paragraphs);
+    });
+    let done = 0;
+    let total = chapters.length + 1;
+    function progress() {
+        done++;
+        inProgress[name] = done / total;
+    }
+    let transformedChapters = await allWithProgress(chapters.map((chapter, ind) => parseLinearChapter(chapter, ind, chapters.length)), progress);
+
+    let transformed = [{
+        $: {
+            id: '[id Ex.: austinpark]', 
+            title: '[title .: Mansfield Park]', 
+            author: '[author Ex.: Jane Austin]', 
+            authorid: '[authorid Ex.: austin]', 
+            year: '[year Ex.: 1893]', 
+            century: '[century Ex.: 19xx]', 
+            decade: '[decade Ex.: 198x]'
+        },
+        chapter: transformedChapters
+    }];
+    return transformed;
+}
+
+async function parseTexts(name, content) {
+    if (content.indexOf('#!') >= 0) {
+        return await parseLinear(name, content);
+    } else {
+        let xml = await parseXML(content);
+        if ('TEI' in xml) {
+            return await parseTei(name, content);
+        } else if ('corpus' in xml) {
+            return xml.corpus.text;
+        } else {
+            throw "Unknown format";
+        }
+    }
+    
+    
 }
 
 const inProgress = {};
@@ -273,7 +370,7 @@ function tagPos(data) {
                     return;
                 }
                 runningTags++;
-                let child = execFile(treeTaggerExec, [fileName], {encoding: 'utf8', cwd: '/tree-tagger'}, (error, stdOut, stdErr) => {
+                let child = execFile(treeTaggerExec, [fileName], {encoding: 'utf8', cwd: '/tree-tagger', maxBuffer: 10 * 1024 * 1024}, (error, stdOut, stdErr) => {
                     runningTags--;
                     if (error) {
                         reject(error);
